@@ -2,10 +2,11 @@
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h" // Correct inclusion for esp_rom_delay_us()
 
 // Configuration
 #define WHEEL_TICK_PIN GPIO_NUM_2 // The GPIO pin for outputting the wheel tick signal
-#define TICK_INTERVAL_MS 100      // Time interval between ticks in milliseconds
+#define TICK_INTERVAL_MS 1000      // Time interval between ticks in milliseconds
 #define PULSE_WIDTH_US 50         // Pulse width of the wheel tick in microseconds
 
 // Tag used for ESP log messages
@@ -17,7 +18,7 @@ void generate_wheel_tick(void *params) {
         // Set pin high to start the pulse
         gpio_set_level(WHEEL_TICK_PIN, 1);
         // Wait for the pulse width duration
-        ets_delay_us(PULSE_WIDTH_US);
+        esp_rom_delay_us(PULSE_WIDTH_US);
         // Set pin low to end the pulse
         gpio_set_level(WHEEL_TICK_PIN, 0);
 
@@ -31,8 +32,8 @@ void generate_wheel_tick(void *params) {
 
 // Main application entry point
 void app_main(void) {
-    // Configure the GPIO pin for the wheel tick output
-    gpio_pad_select_gpio(WHEEL_TICK_PIN);
+    // Initialize the GPIO pin for the wheel tick output
+    gpio_reset_pin(WHEEL_TICK_PIN); // Reset the pin to a known state
     gpio_set_direction(WHEEL_TICK_PIN, GPIO_MODE_OUTPUT);
 
     // Start a FreeRTOS task to generate wheel ticks indefinitely

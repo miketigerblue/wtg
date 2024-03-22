@@ -1,11 +1,8 @@
-| Supported Targets | ESP32 | ESP32-C2 | ESP32-C3 | ESP32-C6 | ESP32-H2 | ESP32-P4 | ESP32-S2 | ESP32-S3 |
-| ----------------- | ----- | -------- | -------- | -------- | -------- | -------- | -------- | -------- |
-
 # Wheel Tick Generator (WTG) for ZED-F9R
 
 ## Overview
 
-The Wheel Tick Generator (WTG) is designed to simulate real locomotive wheel tick signals for testing and development purposes, particularly in applications involving the ZED-F9R module. This component generates synthetic wheel tick signals based on configurable parameters such as frequency and pulse width, making it an essential tool for accurately measuring speed and distance in locomotive applications.
+Wheel Tick Generator (WTG) is designed to simulate real locomotive wheel tick signals for testing and development purposes, particularly in applications involving the ZED-F9R module. This component generates synthetic wheel tick signals based on configurable parameters such as frequency and pulse width, making it an essential tool for accurately measuring speed and distance in locomotive applications.
 
 ## Features
 
