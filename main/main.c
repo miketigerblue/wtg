@@ -77,6 +77,7 @@ void ble_init() {
     }
 }
 
+static esp_gatt_if_t my_gattc_if = ESP_GATT_IF_NONE; // Define a global or static variable to store the interface
 
 // GAP callback function
 static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
@@ -89,9 +90,24 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
             // Handle the start of the scanning process
             break;
 
-        case ESP_GAP_BLE_SCAN_RESULT_EVT:
-            // Handle a scan result, which may include advertisement data from BLE devices
+        case ESP_GAP_BLE_SCAN_RESULT_EVT: {
+            esp_ble_gap_cb_param_t *scan_result = (esp_ble_gap_cb_param_t *)param;
+            uint8_t *adv_name = NULL;
+            uint8_t adv_name_len = 0;
+            adv_name = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv,
+                                        ESP_BLE_AD_TYPE_NAME_CMPL, &adv_name_len);
+            // Check if the advertised name matches the Wahoo sensor's name
+            size_t nameToCompareLength = strlen("Wahoo Sensor Name");
+            if (adv_name != NULL && adv_name_len >= nameToCompareLength &&
+                strncmp((char *)adv_name, "Wahoo Sensor Name", nameToCompareLength) == 0) {
+                ESP_LOGI(TAG, "Wahoo sensor found, initiating connection...");
+                // Stop scanning
+                esp_ble_gap_stop_scanning();
+                // Initiate connection
+                esp_ble_gattc_open(my_gattc_if, scan_result->scan_rst.bda, scan_result->scan_rst.ble_addr_type, true);
+                }
             break;
+        }
 
         case ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT:
             // Handle the stop of the scanning process
@@ -102,15 +118,27 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
     }
 }
 
+
+static uint16_t my_conn_id = 0;                      // To store connection ID
+static esp_bd_addr_t my_remote_bda = {0};            // To store the Bluetooth device address
+
+
 // GATT Client callback function
 static void esp_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param) {
     switch (event) {
         case ESP_GATTC_REG_EVT:
-            // Handle registration event
+            my_gattc_if = gattc_if; // Store the interface provided by the event
             break;
 
         case ESP_GATTC_CONNECT_EVT:
-            // Handle connect event
+            // Log the connection event, indicating successful BLE connection
+            ESP_LOGI(TAG, "ESP_GATTC_CONNECT_EVT, conn_id %d, gatt_if %d", param->connect.conn_id, gattc_if);
+
+            // Store the connection ID and remote device address for future operations
+            my_conn_id = param->connect.conn_id;
+            memcpy(&my_remote_bda, param->connect.remote_bda, sizeof(esp_bd_addr_t));
+
+            // Proceed with service discovery or other post-connection operations
             break;
 
         case ESP_GATTC_DISCONNECT_EVT:
@@ -118,22 +146,7 @@ static void esp_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp
             break;
 
         // Add other cases to handle other GATT client events, such as ESP_GATTC_SEARCH_CMPL_EVT for service discovery completion.
-        case ESP_GAP_BLE_SCAN_RESULT_EVT: {
-            esp_ble_gap_cb_param_t *scan_result = (esp_ble_gap_cb_param_t *)param;
-            uint8_t *adv_name = NULL;
-            uint8_t adv_name_len = 0;
-            adv_name = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv,
-                                        ESP_BLE_AD_TYPE_NAME_CMPL, &adv_name_len);
-            // Check if the advertised name matches the Wahoo sensor's name
-            if (adv_name != NULL && strncmp((char *)adv_name, "Wahoo Sensor Name", adv_name_len) == 0) {
-                ESP_LOGI(TAG, "Wahoo sensor found, initiating connection...");
-                // Stop scanning
-                esp_ble_gap_stop_scanning();
-                // Initiate connection
-                esp_ble_gattc_open(gattc_if, scan_result->scan_rst.bda, scan_result->scan_rst.ble_addr_type, true);
-                }
-            break;
-        }
+
         default:
             break;
     }
