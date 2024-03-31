@@ -14,6 +14,7 @@
 #include "esp_gatt_defs.h"      // GATT definitions and structures
 #include "esp_log.h"            // ESP32 logging
 #include "esp_gatt_common_api.h"
+#include "esp_bt_defs.h"
 
 // Configuration
 #define WHEEL_TICK_PIN GPIO_NUM_2 // The GPIO pin for outputting the wheel tick signal
@@ -31,18 +32,27 @@ static const char *TAG = "WheelTickGenerator";
 #define PROFILE_A_APP_ID 0
 #define INVALID_HANDLE   0
 
+#define HEART_RATE_SERVICE_UUID         0x180D
+#define HEART_RATE_MEASUREMENT_CHAR_UUID 0x2A37
 
-static const char remote_device_name[] = "Wahoo Speed Sensor";
+
+static const char remote_device_name[] = "WHOOP 4C1135981";
 static bool connect    = false;
 static bool get_server = false;
 static esp_gattc_char_elem_t *char_elem_result   = NULL;
 static esp_gattc_descr_elem_t *descr_elem_result = NULL;
+// Assuming that 0 is not a valid handle in your BLE environment
+static uint16_t heart_rate_measurement_char_handle = 0;
+static uint16_t service_start_handle = 0;
+static uint16_t service_end_handle = 0;
+
 
 
 /* Declare static functions */
 static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param);
 static void esp_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param);
 static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param);
+void save_device_to_nvs(esp_bd_addr_t addr);
 
 
 static esp_bt_uuid_t remote_filter_service_uuid = {
@@ -332,9 +342,28 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
     uint8_t *adv_name = NULL;
     uint8_t adv_name_len = 0;
     switch (event) {
+
+    case ESP_GAP_BLE_SEC_REQ_EVT:
+        // Automatically accept the security request from the peer device
+        esp_ble_gap_security_rsp(param->ble_security.ble_req.bd_addr, true);
+        break;
+    case ESP_GAP_BLE_AUTH_CMPL_EVT:
+            if (param->ble_security.auth_cmpl.success) {
+        // Log the message
+        ESP_LOGI(GATTC_TAG, "Authentication Success - Device Bonded");
+
+        // Log the Bluetooth Device Address in hexadecimal format
+        ESP_LOG_BUFFER_HEX(GATTC_TAG, param->ble_security.auth_cmpl.bd_addr, sizeof(esp_bd_addr_t));
+
+        // Proceed with saving the device address to NVS
+        save_device_to_nvs(param->ble_security.auth_cmpl.bd_addr);
+    } else {
+        ESP_LOGE(GATTC_TAG, "Authentication Failed with status %d", param->ble_security.auth_cmpl.fail_reason);
+    }
+        break;
     case ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT: {
         //the unit of the duration is second
-        uint32_t duration = 30;
+        uint32_t duration = 3;
         esp_ble_gap_start_scanning(duration);
         break;
     }
@@ -427,9 +456,9 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
  */
 static void esp_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param)
 {
-    /* If event is register event, store the gattc_if for each profile */
-    if (event == ESP_GATTC_REG_EVT) {
-        if (param->reg.status == ESP_GATT_OK) {
+    switch (event) {
+        case ESP_GATTC_REG_EVT: {
+                    if (param->reg.status == ESP_GATT_OK) {
             gl_profile_tab[param->reg.app_id].gattc_if = gattc_if;
         } else {
             ESP_LOGI(GATTC_TAG, "reg app failed, app_id %04x, status %d",
@@ -437,7 +466,64 @@ static void esp_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp
                     param->reg.status);
             return;
         }
+
+            break;
+        }
+
+        case ESP_GATTC_CONNECT_EVT: {
+            // A device connected; start service discovery
+            esp_ble_gattc_search_service(gattc_if, param->connect.conn_id, NULL);
+            break;
+        }
+
+        case ESP_GATTC_SEARCH_RES_EVT:
+        // Check if the discovered service is the Heart Rate Service
+            if (param->search_res.srvc_id.uuid.len == ESP_UUID_LEN_16 &&
+            param->search_res.srvc_id.uuid.uuid.uuid16 == HEART_RATE_SERVICE_UUID) {
+        // Store the service's start and end handle
+        service_start_handle = param->search_res.start_handle;
+        service_end_handle = param->search_res.end_handle;
+        ESP_LOGI(GATTC_TAG, "Heart Rate Service Found. Start handle: %d, End handle: %d", service_start_handle, service_end_handle);
+        }
+            break;
+
+        case ESP_GATTC_SEARCH_CMPL_EVT:
+            if (get_server){
+            // Assuming you have stored Heart Rate Service handles in variables
+            // service_start_handle and service_end_handle
+            esp_ble_gattc_get_all_char(gattc_if,
+                                   param->search_cmpl.conn_id,
+                                   service_start_handle,
+                                   service_end_handle,
+                                   NULL, 0, 0);
+            }
+            break;
+
+        case ESP_GATTC_REG_FOR_NOTIFY_EVT: {
+            if (param->reg_for_notify.status == ESP_GATT_OK) {
+            ESP_LOGI(GATTC_TAG, "Registered for heart rate measurement notifications");
+             } else {
+                ESP_LOGE(GATTC_TAG, "Failed to register for heart rate measurement notifications");
+            }
+            break;
+            }
+
+        case ESP_GATTC_NOTIFY_EVT: {
+            if (param->notify.is_notify && param->notify.handle == heart_rate_measurement_char_handle) {
+            ESP_LOGI(GATTC_TAG, "Received Heart Rate Measurement Notification");
+            // Decode and handle the heart rate measurement
+            // Assuming heart rate data is in param->notify.value
+            }
+            break;
+            }
+
+
+        // Handle other events as necessary...
+
+        default:
+            break;
     }
+
 
     /* If the gattc_if equal to profile A, call profile A cb handler,
      * so here call each profile's callback */
@@ -460,67 +546,35 @@ static void esp_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp
  * Ensures that the device is ready to perform BLE operations such as scanning
  * and connecting to remote BLE devices.
  */
-// void ble_init() {
-//     // Initialize NVS.
-//     esp_err_t ret = nvs_flash_init();
-//     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-//         ESP_ERROR_CHECK(nvs_flash_erase());
-//         ret = nvs_flash_init();
-//     }
-//     ESP_ERROR_CHECK( ret );
 
-//     ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
 
-//     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
-//     ret = esp_bt_controller_init(&bt_cfg);
-//     if (ret) {
-//         ESP_LOGE(GATTC_TAG, "%s initialize controller failed: %s", __func__, esp_err_to_name(ret));
-//         return;
-//     }
+// Implement the function to save the device address to NVS.
+void save_device_to_nvs(esp_bd_addr_t addr) {
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) return;
 
-//     ret = esp_bt_controller_enable(ESP_BT_MODE_BLE);
-//     if (ret) {
-//         ESP_LOGE(GATTC_TAG, "%s enable controller failed: %s", __func__, esp_err_to_name(ret));
-//         return;
-//     }
+    err = nvs_set_blob(nvs_handle, "whoop_addr", addr, sizeof(esp_bd_addr_t));
+    if (err == ESP_OK) {
+        nvs_commit(nvs_handle);
+    }
+    nvs_close(nvs_handle);
+}
 
-//     esp_bluedroid_config_t bluedroid_cfg = BT_BLUEDROID_INIT_CONFIG_DEFAULT();
-//     ret = esp_bluedroid_init_with_cfg(&bluedroid_cfg);
-//     if (ret) {
-//         ESP_LOGE(GATTC_TAG, "%s init bluetooth failed: %s", __func__, esp_err_to_name(ret));
-//         return;
-//     }
+void attempt_reconnect(void) {
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) return;
 
-//     ret = esp_bluedroid_enable();
-//     if (ret) {
-//         ESP_LOGE(GATTC_TAG, "%s enable bluetooth failed: %s", __func__, esp_err_to_name(ret));
-//         return;
-//     }
-
-//     //register the  callback function to the gap module
-//     ret = esp_ble_gap_register_callback(esp_gap_cb);
-//     if (ret){
-//         ESP_LOGE(GATTC_TAG, "%s gap register failed, error code = %x", __func__, ret);
-//         return;
-//     }
-
-//     //register the callback function to the gattc module
-//     ret = esp_ble_gattc_register_callback(esp_gattc_cb);
-//     if(ret){
-//         ESP_LOGE(GATTC_TAG, "%s gattc register failed, error code = %x", __func__, ret);
-//         return;
-//     }
-
-//     ret = esp_ble_gattc_app_register(PROFILE_A_APP_ID);
-//     if (ret){
-//         ESP_LOGE(GATTC_TAG, "%s gattc app register failed, error code = %x", __func__, ret);
-//     }
-//     esp_err_t local_mtu_ret = esp_ble_gatt_set_local_mtu(500);
-//     if (local_mtu_ret){
-//         ESP_LOGE(GATTC_TAG, "set local  MTU failed, error code = %x", local_mtu_ret);
-//     }
-
-// }
+    esp_bd_addr_t addr;
+    size_t required_size = sizeof(esp_bd_addr_t);
+    err = nvs_get_blob(nvs_handle, "whoop_addr", addr, &required_size);
+    if (err == ESP_OK) {
+        // Attempt to reconnect to the WHOOP device
+        esp_ble_gattc_open(gl_profile_tab[PROFILE_A_APP_ID].gattc_if, addr, BLE_ADDR_TYPE_PUBLIC, true);
+    }
+    nvs_close(nvs_handle);
+}
 
 
 /**
@@ -603,6 +657,8 @@ void app_main(void) {
         return;
     }
 
+    attempt_reconnect(); // Try to reconnect to a saved device
+
     ret = esp_ble_gattc_app_register(PROFILE_A_APP_ID);
     if (ret){
         ESP_LOGE(GATTC_TAG, "%s gattc app register failed, error code = %x", __func__, ret);
@@ -612,6 +668,18 @@ void app_main(void) {
         ESP_LOGE(GATTC_TAG, "set local  MTU failed, error code = %x", local_mtu_ret);
     }
 
+    // Setup security parameters
+    esp_ble_auth_req_t auth_req = ESP_LE_AUTH_BOND; // Bonding with peer device after authentication
+    esp_ble_io_cap_t iocap = ESP_IO_CAP_NONE; // No Input No Output capability
+    uint8_t key_size = 16; // The maximum key size
+    uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
+    uint8_t rsp_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
+
+    esp_ble_gap_set_security_param(ESP_BLE_SM_AUTHEN_REQ_MODE, &auth_req, sizeof(uint8_t));
+    esp_ble_gap_set_security_param(ESP_BLE_SM_IOCAP_MODE, &iocap, sizeof(uint8_t));
+    esp_ble_gap_set_security_param(ESP_BLE_SM_MAX_KEY_SIZE, &key_size, sizeof(uint8_t));
+    esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &init_key, sizeof(uint8_t));
+    esp_ble_gap_set_security_param(ESP_BLE_SM_SET_RSP_KEY, &rsp_key, sizeof(uint8_t));
 
 
     // Initialize the GPIO pin for the wheel tick output
